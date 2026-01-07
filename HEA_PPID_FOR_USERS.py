@@ -7,10 +7,10 @@ import streamlit as st
 from streamlit_extras.colored_header import colored_header
 from streamlit_option_menu import option_menu
 from streamlit_extras.badges import badge
-from streamlit_shap import st_shap
 from streamlit_card import card
 
-from utils import *
+# from utils import *
+from utils1 import check_nan, download_button, load_model
 
 from prettytable import PrettyTable
 
@@ -22,6 +22,7 @@ from openai import OpenAI
 
 import pandas as pd
 
+import joblib
 
 # import os
 # import streamlit as st
@@ -95,260 +96,253 @@ def HEA_PPID():
 
     elif select_option == "Model Inference":
 
-        colored_header(label="Model Inference", description=" ", color_name="violet-90")
 
-        model_source = st.selectbox('Select Function Block', [
+        # ===============================
 
-            '[1] Use internal model (Here, select to call internal model)',
+        # 1️⃣ 自动加载模型
 
-            '[2] Upload your own model (Please upload your model here)'
+        # ===============================
 
-        ])
+        model_folder = r'G:\HEA_PPID\model_done'
 
-        if model_source == '[1] Use internal model (Here, select to call internal model)':
+        # 找到所有 .pkl 模型（排除 scaler/pca）
 
-            # ======== 先自动检索模型，并始终显示模型选择框 ========
-            model_dir = 'model_done'
-            model_files = [f for f in os.listdir('model_done') if f.endswith(('.pkl', '.pickle'))]
+        model_files = [f for f in os.listdir(model_folder)
 
-            st.subheader("Select Internal Model")
-            if model_files:
-                model_selected = st.selectbox('Select internal model to use', model_files)
-                model_path = os.path.join(model_dir, model_selected)
+                       if f.endswith('.pkl') and 'scaler' not in f and 'pca' not in f]
 
-                try:
-                    with open(model_path, 'rb') as f:
-                        model = pickle.load(f)
+        if not model_files:
 
-                    # 检查模型是否有 n_features_in_
-                    if hasattr(model, 'n_features_in_'):
-                        n_model_features = model.n_features_in_
-                        st.info(f"ℹ️ This model expects **{n_model_features} features** as input.")
-                    else:
-                        st.warning("⚠️ This model does not have `n_features_in_` attribute.")
+            st.error("No model file found in model_done!")
 
-                except Exception as e:
-                    st.error(f"Error loading model: {e}")
-                    model = None
-                    n_model_features = None
+            model = None
 
+        else:
 
-            else:
-                st.warning('No models found in model_done/ folder.')
-                model_selected = None
-                model_path = None
+            # 下拉选择模型
 
-            st.markdown("### Manually Input Metals & Ratios")
+            selected_model_name = st.selectbox("Select Model", model_files)
 
-            num_metals = st.number_input("Number of metals", min_value=1, max_value=20, value=3, step=1)
+            try:
 
-            metal_names = []
-            metal_ratios = []
+                model = joblib.load(os.path.join(model_folder, selected_model_name))
 
-            st.markdown("### Enter Metal Names and Their Ratios")
+                st.success(f"Loaded model: {selected_model_name}")
 
-            # 初始化
-            num_metals = 10
-            metal_names = []
-            metal_ratios = []
-            ratio_total = 0.0
-            input_valid = True
+            except Exception as e:
 
-            # 固定金属元素
-            fixed_metals = ['Fe', 'Cu', 'Ni', 'Cr', 'Mn', 'Mo', 'Co', 'Zn']
-            num_metals = len(fixed_metals)
+                st.error(f"Failed to load model: {e}")
 
-            metal_ratios = []
-            input_valid = True
+                model = None
 
-            # 表格输入，每列一个金属 + 1列显示总和
-            cols = st.columns(num_metals + 1)
+        # ===============================
 
-            # 第一行：展示金属名称（不可编辑）
-            for i in range(num_metals):
-                with cols[i]:
-                    st.markdown(f"**{fixed_metals[i]}**")
+        # 2️⃣ 展示标题
 
-            # 第二行：输入比例
-            for i in range(num_metals):
-                with cols[i]:
-                    ratio = st.number_input(
-                        "Ratio (%)", min_value=0.0, max_value=100.0, step=0.01, key=f"metal_ratio_{i}"
-                    )
-                    metal_ratios.append(ratio)
+        # ===============================
 
-            # 最后一列：显示总比例
-            with cols[-1]:
-                ratio_total = round(sum(metal_ratios), 2)
-                st.markdown("**Total Ratio**")
-                st.write(f"{ratio_total} %")
+        colored_header(label="Model Inference", description="Enter metal composition to predict TS", color_name="violet-90")
 
-            # 检查输入合法性
-            if any(r < 0 or r > 100 for r in metal_ratios) or ratio_total != 100.0:
-                input_valid = False
-                st.error("Invalid input: All ratios must be between 0 and 100, and the total must equal 100.00%.")
-            else:
-                input_valid = True
-                st.success("Valid input! Total ratio is 100.00%")
+        # ===============================
 
-            # 表单用于支持禁用按钮
-            with st.form(key="manual_input_form"):
-                submit_button = st.form_submit_button(
-                    label="Generate manual CSV and use for prediction",
-                    disabled=not input_valid
+        # 3️⃣ 用户输入金属比例（22 个元素）
+
+        # ===============================
+
+        FEATURES = [
+            'Co', 'Cr', 'Fe', 'Ni', 'Mn', 'Nb', 'Al', 'Ti', 'C',
+            'Mo', 'Si', 'Cu', 'V', 'Y', 'Sn', 'Li', 'Mg', 'Zn',
+            'Ta', 'Zr', 'Hf', 'W'
+        ]
+
+        if 'metal_ratios' not in st.session_state:
+            st.session_state['metal_ratios'] = [0.0] * len(FEATURES)
+
+        # 分两行显示，每行 11 列
+        first_row_features = FEATURES[:11]
+        second_row_features = FEATURES[11:]
+
+        # 第一行
+        cols1 = st.columns(11)
+        for i, feature in enumerate(first_row_features):
+            with cols1[i]:
+                st.session_state['metal_ratios'][i] = st.number_input(
+                    feature, min_value=0.0, max_value=100.0, step=0.01,
+                    key=f"metal_ratio_{i}"
                 )
 
-            if submit_button:
-                df_manual = pd.DataFrame([metal_ratios], columns=fixed_metals)
-                st.write("Generated Data:")
-                st.write(df_manual)
+        # 第二行
+        cols2 = st.columns(11)
+        for j, feature in enumerate(second_row_features):
+            with cols2[j]:
+                st.session_state['metal_ratios'][j + 11] = st.number_input(
+                    feature, min_value=0.0, max_value=100.0, step=0.01,
+                    key=f"metal_ratio_{j + 11}"
+                )
 
-                tmp_download_link = download_button(df_manual, "manual_input.csv", button_text="Download CSV")
-                st.markdown(tmp_download_link, unsafe_allow_html=True)
+        # 总和显示
+        ratio_total = round(sum(st.session_state['metal_ratios']), 2)
+        st.markdown(f"**Total Ratio = {ratio_total} %**")
 
-                df_ready = df_manual
-                st.success("Manual input ready to use!")
+        # ===============================
 
-            # ======== 后续流程（统一用 df_ready，不管是上传 or 手动填写） ========
-            if 'df_ready' in locals():
-                df = df_ready
-                check_string_NaN(df)
+        # 4️⃣ 验证按钮 + 预测
 
-                colored_header(label="Data information", description=" ", color_name="violet-70")
-                nrow = st.slider("rows", 1, len(df), 5)
-                st.write(df.head(nrow))
+        # ===============================
 
-                colored_header(label="Feature and target", description=" ", color_name="violet-70")
+        if st.button("Validate & Predict TS"):
 
-                target_num = st.number_input('target number', min_value=1, max_value=10, value=1)
+            if model is None:
 
-                col_feature, col_target = st.columns(2)
+                st.error("No model loaded!")
 
-                features = df.iloc[:, :-target_num]
-                targets = df.iloc[:, -target_num:]
+            elif ratio_total != 100.0:
 
-                with col_feature:
-                    st.write(features.head())
+                st.error("Error: Total ratio must equal 100%")
 
-                with col_target:
-                    st.write(targets.head())
+            else:
 
-                colored_header(label="target", description=" ", color_name="violet-70")
+                # 准备完整 DataFrame
 
-                target_selected_option = st.selectbox('target', list(targets)[::-1])
-                targets = targets[target_selected_option]
+                input_df = pd.DataFrame([st.session_state['metal_ratios']], columns=FEATURES)
 
-                preprocess = st.selectbox('data preprocess', [None, 'StandardScaler', 'MinMaxScaler'])
+                # 展示输入
 
-                if preprocess == 'StandardScaler':
-                    features = StandardScaler().fit_transform(features)
-                elif preprocess == 'MinMaxScaler':
-                    features = MinMaxScaler().fit_transform(features)
+                st.subheader("Input Composition")
 
-                # ======== 预测部分，点击按钮触发 ========
-                st.subheader("Run Prediction")
-
-                if model_selected and st.button("Run Prediction"):
-                    try:
-                        with open(model_path, 'rb') as f:
-                            model = pickle.load(f)
-
-                        prediction = model.predict(features)
-
-                        plot = customPlot()
-                        plot.pred_vs_actual(targets, prediction)
-
-                        r2 = r2_score(targets, prediction)
-                        st.write('R2: {}'.format(r2))
-
-                        result_data = pd.concat([targets, pd.DataFrame(prediction)], axis=1)
-                        result_data.columns = ['actual', 'prediction']
-
-                        with st.expander('prediction'):
-                            st.write(result_data)
-
-                            tmp_download_link = download_button(result_data, f'prediction.csv', button_text='download')
-                            st.markdown(tmp_download_link, unsafe_allow_html=True)
-
-                        st.write('---')
-
-                    except FileNotFoundError:
-                        st.error(f'Model file not found: {model_path}')
-
-
-
-
-        elif model_source == '[2] Upload your own model (Please upload your model here)':
-
-            file = st.file_uploader("Upload `.csv`file", label_visibility="collapsed", accept_multiple_files=True)
-
-            if len(file) < 2:
-                table = PrettyTable(['file name', 'class', 'description'])
-                table.add_row(['file_1', 'data set (+test data)', 'data file'])
-                table.add_row(['file_2', 'model', 'model'])
-                st.write(table)
-            elif len(file) == 2:
-                df = pd.read_csv(file[0])
-                model_file = file[1]
+                st.dataframe(input_df)
 
                 try:
-                    model = pickle.load(model_file)
 
-                    if hasattr(model, 'n_features_in_'):
-                        n_model_features = model.n_features_in_
-                        st.info(f"ℹ️ This model expects **{n_model_features} features** as input.")
-                    else:
-                        st.warning("⚠️ This model does not have `n_features_in_` attribute.")
+                    # 使用 Pipeline 预测（包含 scaler + PCA + SVR）
+
+                    predicted_ts = model.predict(input_df)[0]
+
+                    st.subheader("Prediction Result")
+
+                    st.write(f"Predicted TS (MPa): {predicted_ts:.2f}")
+
+
                 except Exception as e:
-                    st.error(f"Error loading model: {e}")
-                    model = None
-                    n_model_features = None
 
-                check_string_NaN(df)
+                    st.error(f"Prediction failed: {e}")
 
-                colored_header(label="Data information", description=" ", color_name="violet-70")
-                nrow = st.slider("rows", 1, len(df), 5)
-                df_nrow = df.head(nrow)
-                st.write(df_nrow)
+            # # 最后一列：显示总比例
+            # with cols[-1]:
+            #     ratio_total = round(sum(metal_ratios), 2)
+            #     st.markdown("**Total Ratio**")
+            #     st.write(f"{ratio_total} %")
+            #
+            # if 'df_ready' in locals():
+            #     df = df_ready  # 用户手动生成的输入数据
+            #
+            #     # 检查 NaN
+            #     if df.isnull().any().any():
+            #         st.error("Error: Input contains NaN values!")
+            #         st.stop()
+            #
+            #     # 显示输入数据
+            #     st.subheader("Input Data")
+            #     st.write(df)
+            #
+            #     # ====== 数据预处理 ======
+            #     # 这里直接用训练时保存的 scaler 和 pca
+            #     features_scaled = scaler.transform(df.values)  # StandardScaler
+            #     features_pca = pca.transform(features_scaled)  # PCA降维
+            #
+            #     # ======== 预测部分 ========
+            #     st.subheader("Run Prediction")
+            #
+            #     if model_selected and st.button("Run Prediction"):
+            #         try:
+            #             # 模型已经加载好了 joblib.load(model_path)
+            #             prediction = model.predict(features_pca)
+            #
+            #             # 显示预测结果
+            #             st.subheader("Prediction Result")
+            #             st.write(f"Predicted value: {prediction[0]:.2f}")
+            #
+            #             # 可选：生成下载 CSV
+            #             result_data = df.copy()
+            #             result_data['Predicted'] = prediction
+            #             csv_file = result_data.to_csv(index=False)
+            #             st.download_button("Download Prediction CSV", csv_file, "prediction.csv", "text/csv")
+            #
+            #         except FileNotFoundError:
+            #             st.error(f"Model file not found: {model_path}")
 
-                colored_header(label="Feature and target", description=" ", color_name="violet-70")
 
-                target_num = st.number_input('target number', min_value=1, max_value=10, value=1)
-
-                col_feature, col_target = st.columns(2)
-                # features
-                features = df.iloc[:, :-target_num]
-                # targets
-                targets = df.iloc[:, -target_num:]
-                with col_feature:
-                    st.write(features.head())
-                with col_target:
-                    st.write(targets.head())
-                colored_header(label="target", description=" ", color_name="violet-70")
-
-                target_selected_option = st.selectbox('target', list(targets)[::-1])
-
-                targets = targets[target_selected_option]
-                preprocess = st.selectbox('data preprocess', [None, 'StandardScaler', 'MinMaxScaler'])
-                if preprocess == 'StandardScaler':
-                    features = StandardScaler().fit_transform(features)
-                elif preprocess == 'MinMaxScaler':
-                    features = MinMaxScaler().fit_transform(features)
-
-                model = pickle.load(model_file)
-                prediction = model.predict(features)
-                # st.write(std)
-                plot = customPlot()
-                plot.pred_vs_actual(targets, prediction)
-                r2 = r2_score(targets, prediction)
-                st.write('R2: {}'.format(r2))
-                result_data = pd.concat([targets, pd.DataFrame(prediction)], axis=1)
-                result_data.columns = ['actual', 'prediction']
-                with st.expander('prediction'):
-                    st.write(result_data)
-                    tmp_download_link = download_button(result_data, f'prediction.csv', button_text='download')
-                    st.markdown(tmp_download_link, unsafe_allow_html=True)
-                st.write('---')
+        # elif model_source == '[2] Upload your own model (Please upload your model here)':
+        #
+        #     file = st.file_uploader("Upload `.csv`file", label_visibility="collapsed", accept_multiple_files=True)
+        #
+        #     if len(file) < 2:
+        #         table = PrettyTable(['file name', 'class', 'description'])
+        #         table.add_row(['file_1', 'data set (+test data)', 'data file'])
+        #         table.add_row(['file_2', 'model', 'model'])
+        #         st.write(table)
+        #     elif len(file) == 2:
+        #         df = pd.read_csv(file[0])
+        #         model_file = file[1]
+        #
+        #         try:
+        #             model = pickle.load(model_file)
+        #
+        #             if hasattr(model, 'n_features_in_'):
+        #                 n_model_features = model.n_features_in_
+        #                 st.info(f"ℹ️ This model expects **{n_model_features} features** as input.")
+        #             else:
+        #                 st.warning("⚠️ This model does not have `n_features_in_` attribute.")
+        #         except Exception as e:
+        #             st.error(f"Error loading model: {e}")
+        #             model = None
+        #             n_model_features = None
+        #
+        #         check_string_NaN(df)
+        #
+        #         colored_header(label="Data information", description=" ", color_name="violet-70")
+        #         nrow = st.slider("rows", 1, len(df), 5)
+        #         df_nrow = df.head(nrow)
+        #         st.write(df_nrow)
+        #
+        #         colored_header(label="Feature and target", description=" ", color_name="violet-70")
+        #
+        #         target_num = st.number_input('target number', min_value=1, max_value=10, value=1)
+        #
+        #         col_feature, col_target = st.columns(2)
+        #         # features
+        #         features = df.iloc[:, :-target_num]
+        #         # targets
+        #         targets = df.iloc[:, -target_num:]
+        #         with col_feature:
+        #             st.write(features.head())
+        #         with col_target:
+        #             st.write(targets.head())
+        #         colored_header(label="target", description=" ", color_name="violet-70")
+        #
+        #         target_selected_option = st.selectbox('target', list(targets)[::-1])
+        #
+        #         targets = targets[target_selected_option]
+        #         preprocess = st.selectbox('data preprocess', [None, 'StandardScaler', 'MinMaxScaler'])
+        #         if preprocess == 'StandardScaler':
+        #             features = StandardScaler().fit_transform(features)
+        #         elif preprocess == 'MinMaxScaler':
+        #             features = MinMaxScaler().fit_transform(features)
+        #
+        #         model = pickle.load(model_file)
+        #         prediction = model.predict(features)
+        #         # st.write(std)
+        #         plot = customPlot()
+        #         plot.pred_vs_actual(targets, prediction)
+        #         r2 = r2_score(targets, prediction)
+        #         st.write('R2: {}'.format(r2))
+        #         result_data = pd.concat([targets, pd.DataFrame(prediction)], axis=1)
+        #         result_data.columns = ['actual', 'prediction']
+        #         with st.expander('prediction'):
+        #             st.write(result_data)
+        #             tmp_download_link = download_button(result_data, f'prediction.csv', button_text='download')
+        #             st.markdown(tmp_download_link, unsafe_allow_html=True)
+        #         st.write('---')
 
     elif select_option == "Chat with Model":
         client = OpenAI(
